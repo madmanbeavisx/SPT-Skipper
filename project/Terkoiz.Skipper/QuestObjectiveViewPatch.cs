@@ -7,6 +7,7 @@ using EFT.UI;
 using HarmonyLib;
 using JetBrains.Annotations;
 using UnityEngine;
+using Object = UnityEngine.Object;
 
 namespace Terkoiz.Skipper
 {
@@ -21,7 +22,9 @@ namespace Terkoiz.Skipper
         }
 
         [PatchPostfix]
-        private static void PatchPostfix([CanBeNull]DefaultUIButton ____handoverButton, AbstractQuestControllerClass questController, Condition condition, QuestClass quest, QuestObjectiveView __instance)
+        private static void PatchPostfix([CanBeNull] DefaultUIButton ____handoverButton,
+            AbstractQuestControllerClass questController, Condition condition, QuestClass quest,
+            QuestObjectiveView __instance)
         {
             if (!SkipperPlugin.ModEnabled.Value)
             {
@@ -63,24 +66,52 @@ namespace Terkoiz.Skipper
                 description: "Are you sure you want to autocomplete this quest objective?",
                 acceptAction: () =>
                 {
-                    if (quest.IsConditionDone(condition))
+                    if (quest == null) return;
+
+                    // 1) Force ALL conditions to their goal values
+                    if (quest.ProgressCheckers != null)
                     {
-                        skipButton.gameObject.SetActive(false);
-                        return;
+                        foreach (var kv in quest.ProgressCheckers)
+                        {
+                            var cond = kv.Key;
+                            var checker = kv.Value;
+                            if (cond == null || checker == null) continue;
+
+                            // Make the checker always report the target value
+                            checker.SetCurrentValueGetter(_ => cond.value);
+                        }
                     }
 
                     SkipperPlugin.Logger.LogDebug($"Setting condition {condition.id} value to {condition.value}");
-
-                    // This line will force any condition checker to pass, as the 'condition.value' field contains the "goal" of any quest condition
-                    quest.ProgressCheckers[condition].SetCurrentValueGetter(_ => condition.value);
+                    
+                    // 2) Ask the quest itself to re-evaluate and promote to turn-in state
+                    // This triggers the proper notification path and sets QuestDataClass.Status too.
+                    try
+                    {
+                        quest.CheckForStatusChange(
+                            EQuestStatus.AvailableForFinish,
+                            notify: true,
+                            fromServer: false,
+                            canFail: false);
+                    }
+                    catch
+                    {
+                        /* if BSG changes signature someday, you'll see it instantly */
+                    }
 
                     // We call 'SetConditionCurrentValue' to trigger all the code needed to make the condition completion appear visually in-game
-                    var conditionController = AccessTools.Field(questController.GetType(), $"{UnderlyingQuestControllerClassName.ToLowerInvariant()}_0").GetValue(questController);
-                    AccessTools.DeclaredMethod(conditionController.GetType().BaseType, "SetConditionCurrentValue").Invoke(conditionController, new object[] { quest, EQuestStatus.AvailableForFinish, condition, condition.value, true });
+                    var conditionController = AccessTools.Field(questController.GetType(), 
+                        $"{UnderlyingQuestControllerClassName.ToLowerInvariant()}_0")
+                        .GetValue(questController);
+                    AccessTools.DeclaredMethod(conditionController.GetType().BaseType, "SetConditionCurrentValue")
+                        .Invoke(conditionController, new object[]
+                        {
+                            quest, EQuestStatus.AvailableForFinish, condition, condition.value, true
+                        });
 
                     skipButton.gameObject.SetActive(false);
                 },
-                cancelAction: () => {},
+                cancelAction: () => { },
                 caption: "Confirmation"));
         }
     }
